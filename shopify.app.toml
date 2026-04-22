@@ -2,7 +2,7 @@
 
 client_id = "63d5398e53fd0bad6c6c74a50b7146cf"
 name = "customer link"
-application_url = "https://example.com"
+application_url = "https://valvetronic-b2b.icecubedev.com"
 embedded = true
 
 [build]
@@ -24,7 +24,7 @@ api_version = "2026-07"
 scopes = "write_products,write_metaobjects,write_metaobject_definitions,customer_read_customers"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://valvetronic-b2b.icecubedev.com/api/auth" ]
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
