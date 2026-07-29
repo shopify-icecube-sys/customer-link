@@ -17,7 +17,7 @@ function WholesaleExtension({ api }) {
     // 1. Customer Name aur ID handle karein
     const authCustomerSignal = api.authenticatedAccount?.customer;
     const authCustomer = authCustomerSignal?.value || authCustomerSignal?.v || authCustomerSignal;
-    
+
     if (authCustomer?.firstName) {
       setCustomerName(authCustomer.firstName);
     }
@@ -91,8 +91,8 @@ function WholesaleExtension({ api }) {
           <s-link href="https://docs.google.com/document/d/1DSAJNmewU7YAW9UrDsxrAQnohHhPmv_UI5EGMLnl7fM/edit?usp=sharing" target="_blank">
             <s-button kind="primary">Wholesale Welcome Packet</s-button>
           </s-link>
-          
-          <s-link href="https://docs.google.com/spreadsheets/d/1bM1ZZJ_1a7YMElbZKAAH9i45P2ztYuzX/edit?usp=sharing&ouid=102222610512598755016&rtpof=true&sd=true" target="_blank">
+
+          <s-link href="https://netorgft5623825-my.sharepoint.com/:x:/g/personal/callen_valvetronicdesigns_com/IQCV1te-IWpIQrwSrzTEVT6sAew08qaW_iUofGXShtwPhQo?e=eRHrPp&wdExp=TEAMS-TREATMENT&web=1&TeamsCID=85557d2a-f663-4623-8d7e-eb5d1adb7b68&linkOpenTime=1785258994089" target="_blank">
             <s-button kind="secondary">Pricing Information and Download</s-button>
           </s-link>
 
