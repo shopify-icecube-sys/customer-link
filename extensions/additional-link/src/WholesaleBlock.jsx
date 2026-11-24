@@ -7,14 +7,73 @@ export default async () => {
   render(<WholesaleExtension api={shopify} />, document.body);
 };
 
+// Used when the merchant has not saved links from the app home page yet, or
+// when the saved links cannot be read. Keep in sync with app/wholesale-links.ts
+const DEFAULT_LINKS = [
+  {
+    label: 'Wholesale Welcome Packet',
+    url: 'https://docs.google.com/document/d/1DSAJNmewU7YAW9UrDsxrAQnohHhPmv_UI5EGMLnl7fM/edit?usp=sharing',
+  },
+  {
+    label: 'Pricing Information and Download',
+    url: 'https://netorgft5623825-my.sharepoint.com/:x:/g/personal/callen_valvetronicdesigns_com/IQCV1te-IWpIQrwSrzTEVT6sAagpZgHZFajyqQW1xd8tL_I?rtime=VETf2u1J30g',
+  },
+  {
+    label: 'Logo Files',
+    url: 'https://drive.google.com/drive/folders/16hDWIiaqhUu_gyWUeasgPAfkGcNq_pF5?usp=sharing',
+  },
+];
+
+const CUSTOMER_ACCOUNT_API = 'shopify://customer-account/api/2026-01/graphql.json';
+
+async function customerAccountQuery(query) {
+  const response = await fetch(CUSTOMER_ACCOUNT_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  return response.json();
+}
+
+// Links saved by the merchant on the app home page (shop metafield).
+// Any problem here falls back to DEFAULT_LINKS so the banner never breaks.
+async function fetchSavedLinks() {
+  try {
+    const result = await customerAccountQuery(`
+      query {
+        shop {
+          metafield(namespace: "$app", key: "wholesale_links") {
+            value
+          }
+        }
+      }
+    `);
+    const value = result.data?.shop?.metafield?.value;
+    if (!value) return null;
+
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return null;
+
+    return parsed.filter(
+      (link) =>
+        typeof link?.label === 'string' &&
+        typeof link?.url === 'string' &&
+        link.label &&
+        link.url.startsWith('https://'),
+    );
+  } catch (err) {
+    console.error('Could not load wholesale links:', err);
+    return null;
+  }
+}
+
 function WholesaleExtension({ api }) {
   const [isWholesale, setIsWholesale] = useState(false);
   const [customerName, setCustomerName] = useState('Customer');
   const [loading, setLoading] = useState(true);
-  const [debugInfo, setDebugInfo] = useState('');
+  const [links, setLinks] = useState(DEFAULT_LINKS);
 
   useEffect(() => {
-    // 1. Customer Name aur ID handle karein
     const authCustomerSignal = api.authenticatedAccount?.customer;
     const authCustomer = authCustomerSignal?.value || authCustomerSignal?.v || authCustomerSignal;
 
@@ -22,47 +81,35 @@ function WholesaleExtension({ api }) {
       setCustomerName(authCustomer.firstName);
     }
 
-    // 2. Fetch Metafields directly from Customer Account API using shopify:// protocol
-    // Ye method explicitly Customer Account API ko hit karta hai (Storefront ko nahi)
     const fetchCustomerData = async () => {
       try {
-        const response = await fetch('shopify://customer-account/api/2026-01/graphql.json', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            query: `
-              query {
-                customer {
-                  firstName
-                  metafield(namespace: "custom", key: "is_wholesale") {
-                    value
-                  }
+        const [result, savedLinks] = await Promise.all([
+          customerAccountQuery(`
+            query {
+              customer {
+                firstName
+                metafield(namespace: "custom", key: "is_wholesale") {
+                  value
                 }
               }
-            `,
-          }),
-        });
-
-        const result = await response.json();
-        console.log('Customer Account API Result:', result);
+            }
+          `),
+          fetchSavedLinks(),
+        ]);
 
         if (result.errors) {
-          setDebugInfo(`GraphQL Error: ${result.errors[0].message}`);
+          console.error('Customer Account API error:', result.errors);
         } else if (result.data?.customer) {
           if (result.data.customer.firstName) {
             setCustomerName(result.data.customer.firstName);
           }
           const val = result.data.customer.metafield?.value;
-          const hasMetafield = val === 'true' || val === true;
-          setIsWholesale(hasMetafield);
-          if (!hasMetafield) setDebugInfo('Metafield returned null or false');
-        } else {
-          setDebugInfo('No customer data returned');
+          setIsWholesale(val === 'true' || val === true);
         }
+
+        if (savedLinks) setLinks(savedLinks);
       } catch (err) {
-        setDebugInfo(`Fetch Error: ${err.message}`);
+        console.error('Could not load customer data:', err);
       } finally {
         setLoading(false);
       }
@@ -77,28 +124,17 @@ function WholesaleExtension({ api }) {
     return null;
   }
 
-  const openLink = (url) => {
-    // New tab mein open karne ke liye explicitly window.open use kar rahe hain
-    window.open(url, '_blank');
-  };
-
   return (
     <s-banner tone="info">
       <s-stack spacing="tight" direction="block">
         <s-text size="large" emphasis="bold">Wholesale Partner Account</s-text>
         <s-text>Welcome back, {customerName}! Here are your exclusive wholesale resources:</s-text>
         <s-stack direction="inline" spacing="loose">
-          <s-link href="https://docs.google.com/document/d/1DSAJNmewU7YAW9UrDsxrAQnohHhPmv_UI5EGMLnl7fM/edit?usp=sharing" target="_blank">
-            <s-button kind="primary">Wholesale Welcome Packet</s-button>
-          </s-link>
-
-          <s-link href="https://netorgft5623825-my.sharepoint.com/:x:/g/personal/callen_valvetronicdesigns_com/IQCV1te-IWpIQrwSrzTEVT6sAew08qaW_iUofGXShtwPhQo?e=eRHrPp&wdExp=TEAMS-TREATMENT&web=1&TeamsCID=85557d2a-f663-4623-8d7e-eb5d1adb7b68&linkOpenTime=1785258994089" target="_blank">
-            <s-button kind="secondary">Pricing Information and Download</s-button>
-          </s-link>
-
-          <s-link href="https://drive.google.com/drive/folders/16hDWIiaqhUu_gyWUeasgPAfkGcNq_pF5?usp=sharing" target="_blank">
-            <s-button kind="secondary">Logo Files</s-button>
-          </s-link>
+          {links.map((link, index) => (
+            <s-link key={link.url} href={link.url} target="_blank">
+              <s-button kind={index === 0 ? 'primary' : 'secondary'}>{link.label}</s-button>
+            </s-link>
+          ))}
         </s-stack>
       </s-stack>
     </s-banner>

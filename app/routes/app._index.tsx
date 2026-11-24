@@ -1,338 +1,261 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import {
+  DEFAULT_LINKS,
+  LINKS_KEY,
+  LINKS_NAMESPACE,
+  isValidUrl,
+  parseLinks,
+  type WholesaleLink,
+} from "../wholesale-links";
+
+type ActionResult = {
+  ok: boolean;
+  links?: WholesaleLink[];
+  errors?: string[];
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
 
-  return null;
+  const response = await admin.graphql(
+    `#graphql
+      query wholesaleLinks($namespace: String!, $key: String!) {
+        shop {
+          metafield(namespace: $namespace, key: $key) {
+            value
+          }
+        }
+      }`,
+    { variables: { namespace: LINKS_NAMESPACE, key: LINKS_KEY } },
+  );
+  const { data } = await response.json();
+  const saved = parseLinks(data?.shop?.metafield?.value);
+
+  return {
+    links: DEFAULT_LINKS.map((fallback, index) => saved?.[index] ?? fallback),
+    isSaved: Boolean(saved),
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
+  const formData = await request.formData();
+
+  const links: WholesaleLink[] = DEFAULT_LINKS.map((_, index) => ({
+    label: String(formData.get(`label_${index}`) ?? "").trim(),
+    url: String(formData.get(`url_${index}`) ?? "").trim(),
+  }));
+
+  const errors: string[] = [];
+  links.forEach((link, index) => {
+    // A link with an empty URL is simply hidden from customers.
+    if (!link.url) return;
+    if (!link.label) errors.push(`Link ${index + 1}: button text is required.`);
+    if (!isValidUrl(link.url)) {
+      errors.push(`Link ${index + 1}: URL must start with https://`);
+    }
+  });
+  if (errors.length) {
+    return { ok: false, errors } satisfies ActionResult;
+  }
+
+  // The definition is what makes the metafield readable from the customer
+  // account extension. Creating it again once it exists returns a TAKEN
+  // error, which is expected.
+  const definitionResponse = await admin.graphql(
     `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
+      mutation wholesaleLinksDefinition($definition: MetafieldDefinitionInput!) {
+        metafieldDefinitionCreate(definition: $definition) {
+          createdDefinition {
             id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-            demoInfo: metafield(namespace: "$app", key: "demo_info") {
-              jsonValue
-            }
+          }
+          userErrors {
+            code
+            message
           }
         }
       }`,
     {
       variables: {
-        product: {
-          title: `${color} Snowboard`,
-          metafields: [
-            {
-              namespace: "$app",
-              key: "demo_info",
-              value: "Created by React Router Template",
-            },
-          ],
+        definition: {
+          name: "Wholesale links",
+          namespace: LINKS_NAMESPACE,
+          key: LINKS_KEY,
+          type: "json",
+          ownerType: "SHOP",
+          access: { customerAccount: "READ" },
         },
       },
     },
   );
-  const responseJson = await response.json();
+  const definitionJson = await definitionResponse.json();
+  const definitionErrors = (
+    definitionJson.data?.metafieldDefinitionCreate?.userErrors ?? []
+  ).filter((error: { code?: string }) => error.code !== "TAKEN");
+  if (definitionErrors.length) {
+    return {
+      ok: false,
+      errors: definitionErrors.map(
+        (error: { message: string }) => error.message,
+      ),
+    } satisfies ActionResult;
+  }
 
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
-
-  const variantResponse = await admin.graphql(
+  const shopResponse = await admin.graphql(
     `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
+      query shopId {
+        shop {
           id
-          price
-          barcode
-          createdAt
         }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
+      }`,
   );
+  const shopJson = await shopResponse.json();
 
-  const variantResponseJson = await variantResponse.json();
-
-  const metaobjectResponse = await admin.graphql(
+  const saveResponse = await admin.graphql(
     `#graphql
-    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
-      metaobjectUpsert(handle: $handle, metaobject: $metaobject) {
-        metaobject {
-          id
-          handle
-          title: field(key: "title") {
-            jsonValue
+      mutation saveWholesaleLinks($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          metafields {
+            id
           }
-          description: field(key: "description") {
-            jsonValue
+          userErrors {
+            message
           }
         }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
+      }`,
     {
       variables: {
-        handle: {
-          type: "$app:example",
-          handle: "demo-entry",
-        },
-        metaobject: {
-          fields: [
-            { key: "title", value: "Demo Entry" },
-            {
-              key: "description",
-              value:
-                "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
-            },
-          ],
-        },
+        metafields: [
+          {
+            ownerId: shopJson.data.shop.id,
+            namespace: LINKS_NAMESPACE,
+            key: LINKS_KEY,
+            type: "json",
+            value: JSON.stringify(links),
+          },
+        ],
       },
     },
   );
+  const saveJson = await saveResponse.json();
+  const saveErrors = saveJson.data?.metafieldsSet?.userErrors ?? [];
+  if (saveErrors.length) {
+    return {
+      ok: false,
+      errors: saveErrors.map((error: { message: string }) => error.message),
+    } satisfies ActionResult;
+  }
 
-  const metaobjectResponseJson = await metaobjectResponse.json();
-
-  return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
-    metaobject:
-      metaobjectResponseJson!.data!.metaobjectUpsert!.metaobject,
-  };
+  return { ok: true, links } satisfies ActionResult;
 };
 
 export default function Index() {
+  const { links, isSaved } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-
   const shopify = useAppBridge();
-  const isLoading =
+  const formRef = useRef<HTMLDivElement>(null);
+
+  const isSaving =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
+  const errors = fetcher.data?.ok === false ? fetcher.data.errors : undefined;
 
   useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
+    if (fetcher.state === "idle" && fetcher.data?.ok) {
+      shopify.toast.show("Wholesale links saved");
     }
-  }, [fetcher.data?.product?.id, shopify]);
+  }, [fetcher.state, fetcher.data, shopify]);
 
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  // Values are read from the fields at save time, so the page does not depend
+  // on how the Polaris web components emit their input events.
+  const save = () => {
+    const formData = new FormData();
+    formRef.current
+      ?.querySelectorAll<HTMLInputElement>("[data-link-field]")
+      .forEach((field) => formData.set(field.name, field.value ?? ""));
+    fetcher.submit(formData, { method: "POST" });
+  };
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
+    <s-page heading="Wholesale links">
+      <s-button
+        slot="primary-action"
+        variant="primary"
+        onClick={save}
+        {...(isSaving ? { loading: true } : {})}
+      >
+        Save
       </s-button>
 
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
-        <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
-          >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
-        </s-paragraph>
-      </s-section>
-      <s-section heading="Get started with products">
-        <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references. Includes a product{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metafields"
-            target="_blank"
-          >
-            metafield
-          </s-link>{" "}
-          and{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metaobjects"
-            target="_blank"
-          >
-            metaobject
-          </s-link>
-          .
-        </s-paragraph>
-        <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
-            {...(isLoading ? { loading: true } : {})}
-          >
-            Generate a product
-          </s-button>
-          {fetcher.data?.product && (
-            <s-button
-              onClick={() => {
-                shopify.intents.invoke?.("edit:shopify/Product", {
-                  value: fetcher.data?.product?.id,
-                });
-              }}
-              target="_blank"
-              variant="tertiary"
-            >
-              Edit product
-            </s-button>
-          )}
-        </s-stack>
-        {fetcher.data?.product && (
-          <s-section heading="productCreate mutation">
+      {errors?.length ? (
+        <s-banner tone="critical" heading="The links could not be saved">
+          <s-unordered-list>
+            {errors.map((error: string) => (
+              <s-list-item key={error}>{error}</s-list-item>
+            ))}
+          </s-unordered-list>
+        </s-banner>
+      ) : null}
+
+      {!isSaved ? (
+        <s-banner tone="info">
+          These are the default links. Press Save once to start managing them
+          from this page.
+        </s-banner>
+      ) : null}
+
+      <div ref={formRef}>
+        {links.map((link, index) => (
+          <s-section key={index} heading={`Link ${index + 1}`}>
             <s-stack direction="block" gap="base">
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
-                </pre>
-              </s-box>
-
-              <s-heading>productVariantsBulkUpdate mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
-                </pre>
-              </s-box>
-
-              <s-heading>metaobjectUpsert mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>
-                    {JSON.stringify(fetcher.data.metaobject, null, 2)}
-                  </code>
-                </pre>
-              </s-box>
+              <s-text-field
+                data-link-field
+                label="Button text"
+                name={`label_${index}`}
+                value={link.label}
+                autocomplete="off"
+              ></s-text-field>
+              <s-url-field
+                data-link-field
+                label="URL"
+                name={`url_${index}`}
+                value={link.url}
+                details="Must start with https://. Leave empty to hide this button."
+                autocomplete="off"
+              ></s-url-field>
             </s-stack>
           </s-section>
-        )}
-      </s-section>
+        ))}
+      </div>
 
-      <s-section slot="aside" heading="App template specs">
+      <s-section slot="aside" heading="Where these links appear">
         <s-paragraph>
-          <s-text>Framework: </s-text>
-          <s-link href="https://reactrouter.com/" target="_blank">
-            React Router
-          </s-link>
+          Wholesale customers see these buttons in the Wholesale Partner Account
+          banner on the Profile page of their customer account.
         </s-paragraph>
         <s-paragraph>
-          <s-text>Interface: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/app-home/using-polaris-components"
-            target="_blank"
-          >
-            Polaris web components
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>API: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            GraphQL
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Custom data: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data"
-            target="_blank"
-          >
-            Metafields &amp; metaobjects
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Database: </s-text>
-          <s-link href="https://www.prisma.io/" target="_blank">
-            Prisma
-          </s-link>
+          Changes go live as soon as you save. Customers see the new links the
+          next time they open or refresh the page.
         </s-paragraph>
       </s-section>
 
-      <s-section slot="aside" heading="Next steps">
+      <s-section slot="aside" heading="Tips">
         <s-unordered-list>
           <s-list-item>
-            Build an{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/getting-started/build-app-example"
-              target="_blank"
-            >
-              example app
-            </s-link>
+            Paste the full sharing link, including https://.
           </s-list-item>
           <s-list-item>
-            Explore Shopify&apos;s API with{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-              target="_blank"
-            >
-              GraphiQL
-            </s-link>
+            Make sure the file is shared so that customers can open it without
+            signing in.
           </s-list-item>
         </s-unordered-list>
       </s-section>
