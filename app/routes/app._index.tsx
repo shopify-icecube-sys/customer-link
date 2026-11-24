@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -163,6 +163,7 @@ export default function Index() {
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
   const formRef = useRef<HTMLDivElement>(null);
+  const [isDirty, setIsDirty] = useState(false);
 
   const isSaving =
     ["loading", "submitting"].includes(fetcher.state) &&
@@ -175,13 +176,44 @@ export default function Index() {
     }
   }, [fetcher.state, fetcher.data, shopify]);
 
-  // Values are read from the fields at save time, so the page does not depend
-  // on how the Polaris web components emit their input events.
+  const getFields = () =>
+    Array.from(
+      formRef.current?.querySelectorAll<HTMLInputElement>(
+        "[data-link-field]",
+      ) ?? [],
+    );
+
+  // Save is only enabled when a field differs from what is currently saved.
+  // The check listens on the fields directly because React 18 does not wire
+  // up event props on custom elements.
+  const savedValues = JSON.stringify(
+    links.flatMap((link) => [link.label, link.url]),
+  );
+  const checkDirty = useCallback(() => {
+    const current = JSON.stringify(
+      getFields().map((field) => (field.value ?? "").trim()),
+    );
+    setIsDirty(current !== savedValues);
+  }, [savedValues]);
+
+  useEffect(() => {
+    const fields = getFields();
+    fields.forEach((field) => {
+      field.addEventListener("input", checkDirty);
+      field.addEventListener("change", checkDirty);
+    });
+    checkDirty();
+    return () => {
+      fields.forEach((field) => {
+        field.removeEventListener("input", checkDirty);
+        field.removeEventListener("change", checkDirty);
+      });
+    };
+  }, [checkDirty]);
+
   const save = () => {
     const formData = new FormData();
-    formRef.current
-      ?.querySelectorAll<HTMLInputElement>("[data-link-field]")
-      .forEach((field) => formData.set(field.name, field.value ?? ""));
+    getFields().forEach((field) => formData.set(field.name, field.value ?? ""));
     fetcher.submit(formData, { method: "POST" });
   };
 
@@ -192,6 +224,7 @@ export default function Index() {
         variant="primary"
         onClick={save}
         {...(isSaving ? { loading: true } : {})}
+        {...(isSaved && !isDirty ? { disabled: true } : {})}
       >
         Save
       </s-button>
